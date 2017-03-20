@@ -10,7 +10,8 @@ The configuration file of "mailpatch.json" is like follow:
 	"emailSender": "xxx@sina.com",
 	"senderPasswd": "xxxxxx",
 	"smtpServerAddr": "smtp.sina.com:25",
-	"emailReceivers": "xxx1@xxxx.com;xxx2@xxxx.com"
+	"emailReceivers": "xxx1@xxxx.com;xxx2@xxxx.com",
+	"enableTLS": true
 }
 
 Notice that "localServer" must be an IP which have a public address
