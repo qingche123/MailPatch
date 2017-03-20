@@ -175,15 +175,14 @@ func mailPatch(w http.ResponseWriter, req *http.Request) {
 	//add the commiter email addr to the receivers
 	commiterHead := strings.Split(patchContent, ">")
 	commiter := strings.Split(commiterHead[0], "<")
-	emailReceivers += ";"
-	emailReceivers += commiter[1]
+	receivers := emailReceivers + ";" + commiter[1]
 
 	//send email
 	if enableTLS {
-		err = sendEmailUseTLS(emailSender, senderPasswd, smtpServerAddr, emailReceivers,
+		err = sendEmailUseTLS(emailSender, senderPasswd, smtpServerAddr, receivers,
 			emailSubject, patchContent, "txt")
 	} else {
-		err = sendEmail(emailSender, senderPasswd, smtpServerAddr, emailReceivers,
+		err = sendEmail(emailSender, senderPasswd, smtpServerAddr, receivers,
 			emailSubject, patchContent, "txt")
 	}
 	if err != nil {
