@@ -3,12 +3,12 @@ package main
 import (
 	"crypto/tls"
 	"errors"
-	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"net/smtp"
 	"os"
+	"strconv"
 	"strings"
 
 	simplejson "github.com/bitly/go-simplejson"
@@ -30,48 +30,64 @@ var smtpServerAddr string
 var emailReceivers string
 var enableTLS bool
 
+var logger *log.Logger
+
+func logFatal(arg ...string) {
+	log.Println(arg)
+	logger.Fatalln(arg)
+}
+
+func logPrint(arg ...string) {
+	log.Println(arg)
+	logger.Println(arg)
+}
+
 // sendEmailUseTLS ---
-func sendEmailUseTLS(sender, password, smtpServer, to, subject, emailBody, mailType string) error {
+func sendEmailUseTLS(sender, password, smtpServer, to, subject, emailBody,
+	mailType string) error {
 	senderName := strings.Split(sender, "@")
 
 	//create smtp client
 	conn, err := tls.Dial("tcp", smtpServer, nil)
 	if err != nil {
-		log.Println("Dialing Error:", err)
+		logPrint("Dialing Error:", err.Error())
 		return err
 	}
 
 	smtpSrv := strings.Split(smtpServer, ":")
-	c, err := smtp.NewClient(conn, smtpSrv[0])
+	client, err := smtp.NewClient(conn, smtpSrv[0])
 	if err != nil {
-		log.Println("Create smpt client error:", err)
+		logPrint("Create smpt client error:", err.Error())
 		return err
 	}
-	defer c.Close()
+	defer client.Close()
 
 	auth := smtp.PlainAuth("", sender, password, smtpSrv[0])
 	if auth != nil {
-		if ok, _ := c.Extension("AUTH"); ok {
-			if err = c.Auth(auth); err != nil {
-				log.Println("Error during AUTH", err)
+		if ok, _ := client.Extension("AUTH"); ok {
+			if err = client.Auth(auth); err != nil {
+				logPrint("Error during AUTH", err.Error())
 				return err
 			}
 		}
 	}
 
-	if err = c.Mail(sender); err != nil {
+	if err = client.Mail(sender); err != nil {
+		logPrint("Error during Mail", err.Error())
 		return err
 	}
 
 	recepter := strings.Split(to, ";")
 	for _, addr := range recepter {
-		if err = c.Rcpt(addr); err != nil {
+		if err = client.Rcpt(addr); err != nil {
+			logPrint("Error during Rcpt", err.Error())
 			return err
 		}
 	}
 
-	w, err := c.Data()
+	writer, err := client.Data()
 	if err != nil {
+		logPrint("Error during Data", err.Error())
 		return err
 	}
 
@@ -81,20 +97,22 @@ func sendEmailUseTLS(sender, password, smtpServer, to, subject, emailBody, mailT
 	} else {
 		contentType = "Content-Type: text/plain" + "; charset=UTF-8"
 	}
-	email := []byte("To: " + to + "\r\nFrom: " + senderName[0] + "<" + sender + ">\r\nSubject: " +
-		subject + "\r\n" + contentType + "\r\n\r\n" + emailBody)
+	email := []byte("To: " + to + "\r\nFrom: " + senderName[0] + "<" + sender +
+		">\r\nSubject: " + subject + "\r\n" + contentType + "\r\n\r\n" + emailBody)
 
-	_, err = w.Write(email)
+	_, err = writer.Write(email)
 	if err != nil {
+		logPrint("Error during Write", err.Error())
 		return err
 	}
 
-	err = w.Close()
+	err = writer.Close()
 	if err != nil {
+		logPrint("Error during Close", err.Error())
 		return err
 	}
 
-	return c.Quit()
+	return client.Quit()
 }
 
 // sendEmail ---
@@ -110,8 +128,8 @@ func sendEmail(sender, password, smtpServer, to, subject, emailBody, mailType st
 		contentType = "Content-Type: text/plain" + "; charset=UTF-8"
 	}
 
-	email := []byte("To: " + to + "\r\nFrom: " + senderName[0] + "<" + sender + ">\r\nSubject: " +
-		subject + "\r\n" + contentType + "\r\n\r\n" + emailBody)
+	email := []byte("To: " + to + "\r\nFrom: " + senderName[0] + "<" + sender +
+		">\r\nSubject: " + subject + "\r\n" + contentType + "\r\n\r\n" + emailBody)
 	receiver := strings.Split(to, ";")
 
 	err := smtp.SendMail(smtpServer, auth, sender, receiver, email)
@@ -123,36 +141,44 @@ func getPatch(receiveBytes []byte) (string, error) {
 	//get the patchURL from the notification
 	js, err := simplejson.NewJson(receiveBytes)
 	if err != nil {
-		fmt.Println("Simplejson NewJson error: ", err.Error())
+		logPrint("Simplejson NewJson error: ", err.Error())
+		return "", err
 	}
 
 	patchURL := js.Get("pull_request").Get("patch_url").MustString()
 	if 0 == len(patchURL) {
-		return "", errors.New("Get patchURL error: ")
+		logPrint("Get patchURL error: ")
+		return "", err
 	}
-	fmt.Println("PatchURL: ", patchURL)
+	logPrint("PatchURL: ", patchURL)
 
 	//get the patch byte the patchURL
 	respPatch, err := http.Get(patchURL)
 	if err != nil {
-		fmt.Println("Get patch's content error: ", err.Error())
+		logPrint("Get patch's content error: ", err.Error())
+		return "", err
 	}
 	defer respPatch.Body.Close()
 
 	patch, err := ioutil.ReadAll(respPatch.Body)
 	if err != nil {
-		fmt.Println("Parse response error: ", err.Error())
+		logPrint("Parse response error: ", err.Error())
+		return "", err
 	}
-	fmt.Println("Patch :\n", string(patch))
+	logPrint("Patch :\n", string(patch))
 
 	return string(patch), nil
 }
 
 // mailPatch ---
 func mailPatch(w http.ResponseWriter, req *http.Request) {
-	fmt.Println("--------------------------------------------------------------------")
-	fmt.Println("Received a notification...")
-	fmt.Println("Req.ContentLength: ", req.ContentLength)
+	logPrint("--------------------------------------------------------------------")
+	logPrint("Received a notification...")
+	logPrint("Req.ContentLength: ", strconv.Itoa(int(req.ContentLength)))
+	if 0 >= req.ContentLength {
+		logPrint("Req.ContentLength error!")
+		return
+	}
 
 	//receive the notification from github
 	receiveBytes := make([]byte, req.ContentLength)
@@ -162,14 +188,14 @@ func mailPatch(w http.ResponseWriter, req *http.Request) {
 		readLen, _ = req.Body.Read(receiveBytes[readSumLen:])
 	}
 
-	fmt.Println("Received DataLen: ", readSumLen)
+	logPrint("Received DataLen: ", strconv.Itoa(int(readSumLen)))
 	w.Write([]byte("Received!!!"))
 
 	//get the patch's content
 	patchContent, err := getPatch(receiveBytes)
 	if err != nil {
-		fmt.Println("GetPatch error!")
-		fmt.Println(err)
+		logPrint("GetPatch error!", err.Error())
+		return
 	}
 
 	//add the commiter email addr to the receivers
@@ -186,10 +212,9 @@ func mailPatch(w http.ResponseWriter, req *http.Request) {
 			emailSubject, patchContent, "txt")
 	}
 	if err != nil {
-		fmt.Println("SendEmail error!")
-		fmt.Println(err)
+		logPrint("SendEmail error!", err.Error())
 	} else {
-		fmt.Println("SendEmail success!")
+		logPrint("SendEmail success!")
 	}
 }
 
@@ -197,73 +222,85 @@ func loadConf(path string) error {
 	f, err := os.Open(path)
 	defer f.Close()
 	if err != nil {
-		return errors.New("Open config file error")
+		logFatal("Open config file error", err.Error())
 	}
 
 	conf, err := ioutil.ReadAll(f)
 	if err != nil {
-		return errors.New("ioutil ReadAll error")
+		logFatal("ioutil ReadAll error", err.Error())
 	}
 
 	js, err := simplejson.NewJson(conf)
 	if err != nil {
-		fmt.Println("Simplejson NewJson error: ", err.Error())
-		return err
+		logFatal("Simplejson NewJson error: ", err.Error())
 	}
 
 	localServer = js.Get("localServer").MustString()
 	if 0 == len(localServer) {
+		logFatal("load config localServer error: ")
 		return errors.New("load config localServer error: ")
 	}
-	fmt.Println("localServer:\t", localServer)
+	logPrint("localServer:\t", localServer)
 	emailSubject = js.Get("emailSubject").MustString()
 	if 0 == len(emailSubject) {
+		logFatal("load config emailSubject error: ")
 		return errors.New("load config emailSubject error: ")
 	}
-	fmt.Println("emailSubject:\t", emailSubject)
+	logPrint("emailSubject:\t", emailSubject)
 	emailSender = js.Get("emailSender").MustString()
 	if 0 == len(emailSender) {
+		logFatal("load config emailSender error: ")
 		return errors.New("load config emailSender error: ")
 	}
-	fmt.Println("emailSender:\t", emailSender)
+	logPrint("emailSender:\t", emailSender)
 	senderPasswd = js.Get("senderPasswd").MustString()
 	if 0 == len(senderPasswd) {
+		logFatal("load config senderPasswd error: ")
 		return errors.New("load config senderPasswd error: ")
 	}
-	fmt.Println("senderPasswd:\t", senderPasswd)
+	logPrint("senderPasswd:\t", senderPasswd)
 	smtpServerAddr = js.Get("smtpServerAddr").MustString()
 	if 0 == len(smtpServerAddr) {
+		logFatal("load config smtpServerAddr error: ")
 		return errors.New("load config smtpServerAddr error: ")
 	}
-	fmt.Println("smtpServerAddr:\t", smtpServerAddr)
+	logPrint("smtpServerAddr:\t", smtpServerAddr)
 	emailReceivers = js.Get("emailReceivers").MustString()
 	if 0 == len(emailReceivers) {
+		logFatal("load config emailReceivers error: ")
 		return errors.New("load config emailReceivers error: ")
 	}
-	fmt.Println("emailReceivers:\t", emailReceivers)
+	logPrint("emailReceivers:\t", emailReceivers)
 	enableTLS = js.Get("enableTLS").MustBool()
 	if enableTLS {
-		fmt.Println("TLS: ", "TLS enable")
+		logPrint("TLS: ", "TLS enable")
 	} else {
-		fmt.Println("TLS: ", "TLS disable")
+		logPrint("TLS: ", "TLS disable")
 	}
 
 	return nil
 }
 
 func main() {
-	err := loadConf(MAILPATCHJSON)
+	log.Println("--------------------------------------------------------------------")
+	file, err := os.Create("MailPatch.log")
 	if err != nil {
-		fmt.Println("LoadConf error: ", err.Error())
-		return
+		log.Println("Fail to create MailPatch.log file!", err.Error())
+		log.Fatalln("Fail to create MailPatch.log file!", err.Error())
+	}
+	logger = log.New(file, "", log.LstdFlags|log.Llongfile)
+
+	err = loadConf(MAILPATCHJSON)
+	if err != nil {
+		logFatal("LoadConf error: ", err.Error())
 	}
 
-	fmt.Println("MailPatch Server Start!")
+	logPrint("MailPatch Server Start!")
 
 	http.HandleFunc("/mailPatch/", mailPatch)
 
 	err = http.ListenAndServe(localServer, nil)
 	if err != nil {
-		fmt.Println("ListenAndServe error: ", err.Error())
+		logFatal("ListenAndServe error: ", err.Error())
 	}
 }
