@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"crypto/tls"
 	"errors"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"net/smtp"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 
@@ -23,12 +26,16 @@ const (
 var localServer string
 
 // SMTP config
-var emailSubject string
 var emailSender string
+var emailSenderName string
 var senderPasswd string
 var smtpServerAddr string
 var emailReceivers string
-var enableTLS bool
+var emailTLSEnable bool
+
+// Github private repository user
+var username string
+var secret string
 
 var logger *log.Logger
 
@@ -43,9 +50,8 @@ func logPrint(arg ...string) {
 }
 
 // sendEmailUseTLS ---
-func sendEmailUseTLS(sender, password, smtpServer, to, subject, emailBody,
-	mailType string) error {
-	senderName := strings.Split(sender, "@")
+func sendEmailUseTLS(sender, senderName, password, smtpServer, to, subject,
+	emailBody, mailType string) error {
 
 	//create smtp client
 	conn, err := tls.Dial("tcp", smtpServer, nil)
@@ -97,7 +103,7 @@ func sendEmailUseTLS(sender, password, smtpServer, to, subject, emailBody,
 	} else {
 		contentType = "Content-Type: text/plain" + "; charset=UTF-8"
 	}
-	email := []byte("To: " + to + "\r\nFrom: " + senderName[0] + "<" + sender +
+	email := []byte("To: " + to + "\r\nFrom: " + senderName + "<" + sender +
 		">\r\nSubject: " + subject + "\r\n" + contentType + "\r\n\r\n" + emailBody)
 
 	_, err = writer.Write(email)
@@ -116,9 +122,9 @@ func sendEmailUseTLS(sender, password, smtpServer, to, subject, emailBody,
 }
 
 // sendEmail ---
-func sendEmail(sender, password, smtpServer, to, subject, emailBody, mailType string) error {
+func sendEmail(sender, senderName, password, smtpServer, to, subject, emailBody,
+	mailType string) error {
 	smtpSrv := strings.Split(smtpServer, ":")
-	senderName := strings.Split(sender, "@")
 	auth := smtp.PlainAuth("", sender, password, smtpSrv[0])
 
 	var contentType string
@@ -128,7 +134,7 @@ func sendEmail(sender, password, smtpServer, to, subject, emailBody, mailType st
 		contentType = "Content-Type: text/plain" + "; charset=UTF-8"
 	}
 
-	email := []byte("To: " + to + "\r\nFrom: " + senderName[0] + "<" + sender +
+	email := []byte("To: " + to + "\r\nFrom: " + senderName + "<" + sender +
 		">\r\nSubject: " + subject + "\r\n" + contentType + "\r\n\r\n" + emailBody)
 	receiver := strings.Split(to, ";")
 
@@ -136,22 +142,8 @@ func sendEmail(sender, password, smtpServer, to, subject, emailBody, mailType st
 	return err
 }
 
-// getPatch parse the notification and get the patch
-func getPatch(receiveBytes []byte) (string, error) {
-	//get the patchURL from the notification
-	js, err := simplejson.NewJson(receiveBytes)
-	if err != nil {
-		logPrint("Simplejson NewJson error: ", err.Error())
-		return "", err
-	}
-
-	patchURL := js.Get("pull_request").Get("patch_url").MustString()
-	if 0 == len(patchURL) {
-		logPrint("Get patchURL error: ")
-		return "", err
-	}
-	logPrint("PatchURL: ", patchURL)
-
+// getPatchFromURL get the patch from url
+func getPatchFromURL(patchURL string) (string, error) {
 	//get the patch byte the patchURL
 	respPatch, err := http.Get(patchURL)
 	if err != nil {
@@ -165,9 +157,105 @@ func getPatch(receiveBytes []byte) (string, error) {
 		logPrint("Parse response error: ", err.Error())
 		return "", err
 	}
-	logPrint("Patch :\n", string(patch))
-
+	//logPrint("Patch :\n", string(patch))
+	logPrint("Got the patch from public repository")
 	return string(patch), nil
+}
+
+// getPubRepoPatch parse the notification and get the patch
+func getPubRepoPatch(js *simplejson.Json) (string, error) {
+	//get the patchURL from the notification
+	patchURL := js.Get("pull_request").Get("patch_url").MustString()
+	if 0 == len(patchURL) {
+		logPrint("Get patchURL error: ")
+		return "", errors.New("Can't find pull_request->patch_url")
+	}
+	logPrint("PatchURL: ", patchURL)
+
+	return getPatchFromURL(patchURL)
+}
+
+// getPatchByCmd get the patch
+func getPatchByCmd(commandName string, params []string) (string, bool) {
+	patchContent := ""
+	cmd := exec.Command(commandName, params...)
+
+	logPrint("Execute: ", strings.Join(cmd.Args[2:], " "))
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		logPrint("StdoutPipe error: ", err.Error())
+		return "", false
+	}
+
+	//Start execute the command, but it wonn't wait for the return
+	cmd.Start()
+
+	reader := bufio.NewReader(stdout)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil || io.EOF == err {
+			break
+		}
+		patchContent += line
+	}
+
+	//Wait return the command's return code and release the resources
+	err = cmd.Wait()
+	if err != nil {
+		logPrint("Cmd Wait error: ", err.Error())
+		return "", false
+	}
+	return patchContent, true
+}
+
+// getPrvRepoPatch parse the notification and get the patch
+func getPrvRepoPatch(js *simplejson.Json) (string, error) {
+	//get the patchURL from the notification
+	statusesURL := js.Get("pull_request").Get("statuses_url").MustString()
+	if 0 == len(statusesURL) {
+		logPrint("Get statusesURL error: ")
+		return "", errors.New("Can't find pull_request->statuses_url")
+	}
+	patchURL := strings.Replace(statusesURL, "statuses", "commits", 1)
+	//logPrint("PatchURL: ", patchURL)
+
+	//downloadCmd := "curl -u \"qingche123:ggyyff1989\" -H \"Accept: application/vnd.github.patch\"
+	// https://api.github.com/repos/qingche123/GoOnchainNTRU/commits/c7e709b5b0bf44f948c88fe8b629e7529bd78ac0"
+	downloadCmd := "curl -u \"" + username + ":" + secret +
+		"\" -H \"Accept: application/vnd.github.patch\" " + patchURL
+	command := "/bin/bash"
+	params := []string{"-c", downloadCmd}
+
+	patch, ret := getPatchByCmd(command, params)
+	if false == ret {
+		return "", errors.New("getPatchByCmd error")
+	}
+	//logPrint("Patch :\n", patch)
+	logPrint("Got the patch from private repository")
+	return patch, nil
+}
+
+// getPatch get the patch from notification
+func getPatch(receiveBytes []byte) (string, error) {
+	js, err := simplejson.NewJson(receiveBytes)
+	if err != nil {
+		logPrint("Simplejson NewJson error: ", err.Error())
+		return "", err
+	}
+
+	priv := js.Get("repository").Get("private").MustBool()
+	if priv {
+		logPrint("The repository is private")
+
+		if 0 == len(secret) || 0 == len(username) {
+			logPrint("Username or Secret error")
+			return "", errors.New("Username or Secret error")
+		}
+		return getPrvRepoPatch(js)
+	}
+
+	logPrint("The repository is public")
+	return getPubRepoPatch(js)
 }
 
 // mailPatch ---
@@ -198,18 +286,25 @@ func mailPatch(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	//get patch's commit header as emailSubject
+	commitTitleHeadIndex := strings.Index(patchContent, "[PATCH]")
+	commitHead := patchContent[commitTitleHeadIndex:]
+	commitTitleEndIndex := strings.Index(commitHead, "\n")
+	emailSubject := commitHead[0:commitTitleEndIndex]
+
 	//add the commiter email addr to the receivers
 	commiterHead := strings.Split(patchContent, ">")
 	commiter := strings.Split(commiterHead[0], "<")
 	receivers := emailReceivers + ";" + commiter[1]
+	logPrint("Receivers: ", receivers)
 
 	//send email
-	if enableTLS {
-		err = sendEmailUseTLS(emailSender, senderPasswd, smtpServerAddr, receivers,
-			emailSubject, patchContent, "txt")
+	if emailTLSEnable {
+		err = sendEmailUseTLS(emailSender, emailSenderName, senderPasswd, smtpServerAddr,
+			receivers, emailSubject, patchContent, "txt")
 	} else {
-		err = sendEmail(emailSender, senderPasswd, smtpServerAddr, receivers,
-			emailSubject, patchContent, "txt")
+		err = sendEmail(emailSender, emailSenderName, senderPasswd, smtpServerAddr,
+			receivers, emailSubject, patchContent, "txt")
 	}
 	if err != nil {
 		logPrint("SendEmail error!", err.Error())
@@ -241,18 +336,18 @@ func loadConf(path string) error {
 		return errors.New("load config localServer error: ")
 	}
 	logPrint("localServer:\t", localServer)
-	emailSubject = js.Get("emailSubject").MustString()
-	if 0 == len(emailSubject) {
-		logFatal("load config emailSubject error: ")
-		return errors.New("load config emailSubject error: ")
-	}
-	logPrint("emailSubject:\t", emailSubject)
 	emailSender = js.Get("emailSender").MustString()
 	if 0 == len(emailSender) {
 		logFatal("load config emailSender error: ")
 		return errors.New("load config emailSender error: ")
 	}
 	logPrint("emailSender:\t", emailSender)
+	emailSenderName = js.Get("emailSenderName").MustString()
+	if 0 == len(emailSenderName) {
+		logFatal("load config emailSenderName error: ")
+		return errors.New("load config emailSenderName error: ")
+	}
+	logPrint("emailSenderName:\t", emailSenderName)
 	senderPasswd = js.Get("senderPasswd").MustString()
 	if 0 == len(senderPasswd) {
 		logFatal("load config senderPasswd error: ")
@@ -271,12 +366,18 @@ func loadConf(path string) error {
 		return errors.New("load config emailReceivers error: ")
 	}
 	logPrint("emailReceivers:\t", emailReceivers)
-	enableTLS = js.Get("enableTLS").MustBool()
-	if enableTLS {
-		logPrint("TLS: ", "TLS enable")
+	emailTLSEnable = js.Get("enableTLS").MustBool()
+	if emailTLSEnable {
+		logPrint("emailTLSEnable:\t", "True")
 	} else {
-		logPrint("TLS: ", "TLS disable")
+		logPrint("emailTLSEnable:\t", "False")
 	}
+
+	username = js.Get("username").MustString()
+	logPrint("github username:\t", username)
+
+	secret = js.Get("secret").MustString()
+	logPrint("github secret:\t", secret)
 
 	return nil
 }
@@ -285,10 +386,9 @@ func main() {
 	log.Println("--------------------------------------------------------------------")
 	file, err := os.Create("MailPatch.log")
 	if err != nil {
-		log.Println("Fail to create MailPatch.log file!", err.Error())
 		log.Fatalln("Fail to create MailPatch.log file!", err.Error())
 	}
-	logger = log.New(file, "", log.LstdFlags|log.Llongfile)
+	logger = log.New(file, "", log.LstdFlags)
 
 	err = loadConf(MAILPATCHJSON)
 	if err != nil {
