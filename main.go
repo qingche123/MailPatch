@@ -287,10 +287,19 @@ func mailPatch(w http.ResponseWriter, req *http.Request) {
 	}
 
 	//get patch's commit header as emailSubject
-	commitTitleHeadIndex := strings.Index(patchContent, "[PATCH]")
+	commitTitleHeadIndex := strings.Index(patchContent, "[PATCH")
+	if -1 == commitTitleHeadIndex {
+		logPrint("GetCommitTitleHeadIndex error!")
+		return
+	}
 	commitHead := patchContent[commitTitleHeadIndex:]
 	commitTitleEndIndex := strings.Index(commitHead, "\n")
+	if -1 == commitTitleEndIndex {
+		logPrint("GetCommitTitleEndIndex error!")
+		return
+	}
 	emailSubject := commitHead[0:commitTitleEndIndex]
+	logPrint("EmailSubject: ", emailSubject)
 
 	//add the commiter email addr to the receivers
 	commiterHead := strings.Split(patchContent, ">")
